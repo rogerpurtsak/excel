@@ -209,7 +209,7 @@ def t_test_two_sample(
 
 
 def chi_square_test(
-    observed: ArrayLike, expected: ArrayLike | None = None
+    observed: ArrayLike, expected: ArrayLike | None = None, alpha: float = 0.05
 ) -> dict[str, float | bool]:
     """Chi-square goodness-of-fit test.
 
@@ -226,5 +226,6 @@ def chi_square_test(
         "chi_square": float(chi2),
         "p_value": float(p_value),
         "df": int(df),
-        "reject_null": bool(p_value < 0.05),
+        "alpha": alpha,
+        "reject_null": bool(p_value < alpha),
     }
