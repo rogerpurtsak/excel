@@ -27,15 +27,32 @@ ANALYZE_TOOL_NAME = "record_workbook_analysis"
 REVISION_TOOL_NAME = "record_revision_questions"
 
 SYSTEM_PROMPT = (
-    "You are a statistics teaching assistant that inspects Estonian-language "
-    "Excel worksheets ('tööleht') containing statistics exercises and plans how "
-    "to solve them. You identify each task (correlation, regression, confidence "
-    "intervals, predictions, hypothesis tests, descriptive statistics, charts), "
-    "locate the relevant data ranges, and produce a structured plan. For each "
-    "task, provide the exact Excel formulas that would compute the result (using "
-    "functions like CORREL, SLOPE, INTERCEPT, RSQ, FORECAST, CONFIDENCE.T), a "
-    "clear step-by-step method, and an Estonian-language explanation. The actual "
-    "numeric computation is done separately in Python; your job is the plan. "
+    "You are a statistics teaching assistant that analyzes Excel workbooks "
+    "containing statistics exercises (in any language, not necessarily Estonian) "
+    "and produces a structured solution plan.\n\n"
+    "CRITICAL — CELL REFERENCES:\n"
+    "The workbook payload includes every non-empty cell with its exact column "
+    "letter and 1-based row number (e.g. row 3 column C → 'C3'). You MUST read "
+    "these coordinates from the payload and use them in your plan. Never assume "
+    "data is in columns A and B. Never assume a fixed row count. Never guess "
+    "where data lives — read it from the payload.\n\n"
+    "For every task that involves two data series (regression, correlation, "
+    "two-sample test), set inputs.x_range and inputs.y_range to the exact cell "
+    "ranges you observed, e.g. 'C2:C20' and 'E2:E20'. For tasks with one data "
+    "series (one-sample test, descriptive statistics), set inputs.data_range.\n\n"
+    "SUPPORTED TASK TYPES:\n"
+    "  correlation, regression, confidence_interval, prediction, "
+    "prediction_interval, hypothesis_test, descriptive_stats, chart, other\n\n"
+    "OPTIONAL INPUT FIELDS (include only when relevant):\n"
+    "  alpha (default 0.05), x_new (required for prediction/CI at a point), "
+    "mu0 (required for one-sample hypothesis test), "
+    "method ('pearson'|'spearman'), equal_var (boolean, two-sample t-test)\n\n"
+    "For each task also provide:\n"
+    "  • excel_formulas: exact Excel formulas referencing real cell addresses "
+    "    (CORREL, SLOPE, INTERCEPT, RSQ, FORECAST, CONFIDENCE.T, T.TEST, etc.)\n"
+    "  • steps: numbered solution steps\n"
+    "  • explanation: plain-language explanation of what the task asks\n\n"
+    "The Python engine performs the actual computation; your job is the plan. "
     "Always call the provided tool to return your analysis."
 )
 
@@ -106,6 +123,7 @@ class AIClient:
                 resp = self._client.messages.create(
                     model=self.config.model,
                     max_tokens=8000,
+                    system=SYSTEM_PROMPT,
                     tools=tools,
                     tool_choice={"type": "auto"},
                     messages=[{"role": "user", "content": prompt}],
@@ -141,7 +159,9 @@ class AIClient:
         """One API call: analyze the workbook and return a WorkbookAnalysis."""
         prompt = (
             "Analyze this Excel workbook and plan how to solve every statistics "
-            "task it contains. Workbook data (JSON):\n\n"
+            "task it contains. Use the exact cell coordinates from the payload "
+            "to set x_range, y_range, or data_range in each task's inputs — "
+            "do not assume column layout. Workbook data (JSON):\n\n"
             + json.dumps(inspection_data, ensure_ascii=False, indent=2)
             + "\n\nReturn the plan via the tool."
         )

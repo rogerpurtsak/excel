@@ -238,3 +238,121 @@ def test_backup_path_not_active(tmp_path, monkeypatch):
     from pathlib import Path
     assert Path(backup).exists()
     assert opened == []  # no Excel open triggered
+
+
+def test_backup_timestamps_unique(tmp_path, monkeypatch):
+    """Two rapid backup_workbook calls must not produce the same filename."""
+    monkeypatch.setattr(ew, "_backup_dir", lambda: tmp_path / "backups")
+    src = tmp_path / "book.xls"
+    src.write_text("data")
+    p1 = ew.backup_workbook(str(src))
+    p2 = ew.backup_workbook(str(src))
+    assert p1 != p2, "Two rapid backups produced identical filenames"
+
+
+def test_ci_labels_use_actual_alpha():
+    """write_lahendus must reflect the actual alpha in CI display text, not always 95%."""
+    book = FakeBook()
+    insp = _inspection()
+
+    plan = TaskPlan(
+        task_id="t_ci",
+        source_sheet="Tooleht",
+        task_type=TaskType.CONFIDENCE_INTERVAL,
+        description="CI 90%",
+    )
+    from src import math_engine as me
+    ci_vals = me.regression_confidence_intervals(list(insp.sheets[0].numeric_columns["A"]),
+                                                 list(insp.sheets[0].numeric_columns["B"]),
+                                                 alpha=0.10)
+    result = TaskResult(
+        task_id="t_ci",
+        task_type=TaskType.CONFIDENCE_INTERVAL,
+        source_sheet="Tooleht",
+        values=ci_vals,
+    )
+    # Should not raise and should write 90% labels (not 95%).
+    name = ew.write_lahendus(book, [plan], [result], insp)
+    assert name == ew.SHEET_LAHENDUS
+    # Inspect written cell values for "90" somewhere in the sheet.
+    sheet = book.sheets[ew.SHEET_LAHENDUS]
+    all_values = list(sheet._values.values())
+    text_vals = [str(v) for v in all_values if v is not None]
+    assert any("90" in s for s in text_vals), "Expected '90' in CI labels but not found"
+
+
+def test_formula_written_as_formula(monkeypatch):
+    """write_arvutused stores Excel formulas via .formula, not .value."""
+    book = FakeBook()
+    insp = _inspection()
+
+    # Patch FakeRange to track whether formula or value was set.
+    formula_assignments = {}
+    value_assignments = {}
+
+    original_range_class = FakeRange
+
+    class TrackingRange(original_range_class):
+        @property
+        def formula(self):
+            return formula_assignments.get(self._key)
+
+        @formula.setter
+        def formula(self, v):
+            formula_assignments[self._key] = v
+
+        @original_range_class.value.setter
+        def value(self, v):
+            self._values[self._key] = v
+            value_assignments[self._key] = v
+
+    # Monkey-patch FakeSheet to use TrackingRange.
+    original_range_fn = FakeSheet.range
+
+    def tracking_range(self_sheet, a, b=None):
+        key = str(a) if b is None else (a, b)
+        if key not in self_sheet._ranges:
+            self_sheet._ranges[key] = TrackingRange(self_sheet._values, key)
+        return self_sheet._ranges[key]
+
+    monkeypatch.setattr(FakeSheet, "range", tracking_range)
+
+    plan = TaskPlan(
+        task_id="t1",
+        source_sheet="Tooleht",
+        task_type=TaskType.CORRELATION,
+        description="r",
+        excel_formulas=[{"cell": "B10", "formula": "=CORREL(A2:A9,B2:B9)"}],
+    )
+    result = TaskResult(
+        task_id="t1",
+        task_type=TaskType.CORRELATION,
+        source_sheet="Tooleht",
+        values={"r": 0.885, "p_value": 0.003},
+    )
+
+    ew.write_arvutused(book, [plan], [result], insp)
+
+    # At least one formula starting with = should have been written via .formula.
+    assert any(
+        isinstance(v, str) and v.startswith("=") for v in formula_assignments.values()
+    ), f"No formula written via .formula setter; got: {formula_assignments}"
+
+
+def test_repeated_run_reuses_ai_sheet():
+    """write_all_sheets on a second run must clear and reuse existing AI sheets."""
+    book = FakeBook()
+    insp = _inspection()
+    analysis = WorkbookAnalysis(sheets=["Tooleht"], tasks=[])
+
+    # First run.
+    report1 = ew.write_all_sheets(book, analysis, [], insp)
+    # Confirm sheet exists and is marked.
+    lahendus = book.sheets[ew.SHEET_LAHENDUS]
+    lahendus.range("A5").value = "old data from first run"
+
+    # Second run — must reuse the same sheet (clear + rewrite), not raise.
+    report2 = ew.write_all_sheets(book, analysis, [], insp)
+    assert ew.SHEET_LAHENDUS in report2["written"]
+    # Old data must be cleared.
+    assert lahendus.range("A5").value is None

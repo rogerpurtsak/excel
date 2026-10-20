@@ -41,6 +41,8 @@ class SheetData:
     rows: list[list[Any]] = field(default_factory=list)
     text_blocks: list[str] = field(default_factory=list)
     numeric_columns: dict[str, list[float]] = field(default_factory=dict)
+    # Column letter → header text detected from the first row (if it contains labels).
+    column_headers: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -54,15 +56,34 @@ class WorkbookInspection:
         return [s.name for s in self.sheets]
 
     def to_ai_payload(self) -> dict[str, Any]:
-        """Compact representation handed to the AI for analysis."""
+        """Representation handed to the AI for analysis.
+
+        Rows are indexed with 1-based row numbers and column letters so the AI
+        can reference exact cell addresses (e.g. 'A2:A9') in its task plans.
+        """
         return {
             "path": os.path.basename(self.path),
             "sheets": [
                 {
                     "name": s.name,
-                    "rows": s.rows,
-                    "text_blocks": s.text_blocks,
-                    "numeric_columns": {k: v for k, v in s.numeric_columns.items()},
+                    "column_headers": s.column_headers,
+                    # Each row includes its 1-based row number and a dict of
+                    # column_letter → value for every non-None cell.  Capped at
+                    # 200 rows for token efficiency; student workbooks are small.
+                    "rows": [
+                        {
+                            "row": i + 1,
+                            "cells": {
+                                _column_letter(j): val
+                                for j, val in enumerate(row or [])
+                                if val is not None and j < 702  # A–ZZ
+                            },
+                        }
+                        for i, row in enumerate(s.rows[:200])
+                        if any(v is not None for v in (row or []))
+                    ],
+                    "text_blocks": s.text_blocks[:30],
+                    "numeric_column_letters": list(s.numeric_columns.keys()),
                 }
                 for s in self.sheets
             ],
@@ -92,6 +113,18 @@ def inspect_workbook(path: str) -> WorkbookInspection:
 
 def _collect_sheet(name: str, grid: list[list[Any]]) -> SheetData:
     sheet = SheetData(name=name, rows=grid)
+
+    # Detect column headers: if the first non-empty row is mostly text, treat
+    # it as a header row and record the labels.
+    if grid:
+        first_row = grid[0] or []
+        text_count = sum(1 for v in first_row if isinstance(v, str) and v.strip())
+        num_count = sum(1 for v in first_row if isinstance(v, (int, float)) and not isinstance(v, bool))
+        if text_count > 0 and text_count >= num_count:
+            for col_idx, val in enumerate(first_row):
+                if isinstance(val, str) and val.strip():
+                    sheet.column_headers[_column_letter(col_idx)] = val.strip()
+
     # Gather text blocks (task prose) and numeric columns.
     numeric_by_col: dict[int, list[float]] = {}
     for row in grid:
@@ -328,14 +361,17 @@ def open_in_excel(path: str):
 
 def get_xw_book(path: str):
     """Return the xlwings Book for the given path, which must already be open in Excel.
-    Searches all open books by resolved path; falls back to the active book.
-    Raises RuntimeError with Estonian message if not found.
+
+    Searches all open books by resolved path. Raises RuntimeError if the file
+    is not found among open books — never falls back to an arbitrary active
+    workbook, which could corrupt the wrong file.
     """
     xw = _import_xlwings()
     if xw is None:
         raise RuntimeError("xlwings pole saadaval. Veendu, et Microsoft Excel on paigaldatud.")
     from pathlib import Path as _Path
     norm = str(_Path(path).resolve())
+    name = _Path(path).name
     try:
         for book in xw.books:
             try:
@@ -343,14 +379,14 @@ def get_xw_book(path: str):
                     return book
             except Exception:
                 continue
-        active = xw.books.active
-        if active:
-            return active
     except Exception as exc:
-        pass
+        raise RuntimeError(
+            f"Töövihikut '{name}' ei leitud Excelis: {exc}"
+        ) from exc
     raise RuntimeError(
-        f"Töövihikut '{_Path(path).name}' ei leitud Excelis. "
-        "Veendu, et fail on Microsoft Excelis avatud."
+        f"Töövihikut '{name}' ei leitud avatud Exceli töövihikutest. "
+        "Veendu, et täpselt see fail on Microsoft Excelis avatud "
+        f"(otsiti: {norm})."
     )
 
 
@@ -364,3 +400,98 @@ def detect_active_workbook() -> str | None:
         return book.fullname
     except Exception:
         return None
+
+
+# ------------------------------------------------------------------ range helpers
+
+def _col_letter_to_idx(letter: str) -> int:
+    """Convert a column letter string to a 0-based column index.  A→0, Z→25, AA→26."""
+    idx = 0
+    for ch in letter.upper():
+        idx = idx * 26 + (ord(ch) - 64)
+    return idx - 1
+
+
+def _parse_cell_ref(ref: str) -> tuple[int, int]:
+    """Parse a cell reference like 'A2' into (col_0based, row_0based)."""
+    import re
+    m = re.match(r"^([A-Za-z]+)(\d+)$", ref.strip())
+    if not m:
+        raise ValueError(f"Invalid cell reference: {ref!r}")
+    return _col_letter_to_idx(m.group(1)), int(m.group(2)) - 1
+
+
+def extract_range_values(
+    inspection: WorkbookInspection, sheet_name: str, range_str: str
+) -> list[float]:
+    """Extract all numeric values from a cell range string such as 'A2:A9'.
+
+    Skips None and non-numeric cells so missing observations are omitted.
+    For multi-column ranges, values are read left-to-right then top-to-bottom.
+    """
+    sheet = next((s for s in inspection.sheets if s.name == sheet_name), None)
+    if sheet is None:
+        raise ValueError(f"Sheet '{sheet_name}' not found in workbook")
+    parts = [p.strip() for p in range_str.strip().split(":")]
+    c1, r1 = _parse_cell_ref(parts[0])
+    c2, r2 = _parse_cell_ref(parts[-1])
+    vals: list[float] = []
+    for r in range(r1, r2 + 1):
+        if r >= len(sheet.rows):
+            continue
+        row = sheet.rows[r]
+        for c in range(c1, c2 + 1):
+            if c < len(row):
+                v = row[c]
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    vals.append(float(v))
+    return vals
+
+
+def extract_paired_range_values(
+    inspection: WorkbookInspection,
+    sheet_name: str,
+    x_range: str,
+    y_range: str,
+) -> tuple[list[float], list[float]]:
+    """Extract paired (x, y) values from two single-column cell ranges.
+
+    Aligns by row and drops rows where either value is missing (None or
+    non-numeric).  Both ranges must cover the same row span; raises ValueError
+    if they do not (indicates an AI plan error).
+    """
+    sheet = next((s for s in inspection.sheets if s.name == sheet_name), None)
+    if sheet is None:
+        raise ValueError(f"Sheet '{sheet_name}' not found in workbook")
+
+    def _parse(rng: str) -> tuple[int, int, int, int]:
+        parts = [p.strip() for p in rng.strip().split(":")]
+        c1, r1 = _parse_cell_ref(parts[0])
+        c2, r2 = _parse_cell_ref(parts[-1])
+        return c1, r1, c2, r2
+
+    xc1, xr1, xc2, xr2 = _parse(x_range)
+    yc1, yr1, yc2, yr2 = _parse(y_range)
+
+    if xr1 != yr1 or xr2 != yr2:
+        raise ValueError(
+            f"x_range '{x_range}' spans rows {xr1+1}–{xr2+1} but "
+            f"y_range '{y_range}' spans rows {yr1+1}–{yr2+1}. "
+            "Paired data must cover the same row range."
+        )
+
+    x_vals: list[float] = []
+    y_vals: list[float] = []
+    for r in range(xr1, xr2 + 1):
+        if r >= len(sheet.rows):
+            continue
+        row = sheet.rows[r]
+        xv = row[xc1] if xc1 < len(row) else None
+        yv = row[yc1] if yc1 < len(row) else None
+        if (
+            isinstance(xv, (int, float)) and not isinstance(xv, bool)
+            and isinstance(yv, (int, float)) and not isinstance(yv, bool)
+        ):
+            x_vals.append(float(xv))
+            y_vals.append(float(yv))
+    return x_vals, y_vals

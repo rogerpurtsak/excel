@@ -84,7 +84,45 @@ WORKBOOK_ANALYSIS_TOOL_SCHEMA: dict[str, Any] = {
                         "enum": [t.value for t in TaskType],
                     },
                     "description": {"type": "string"},
-                    "inputs": {"type": "object", "additionalProperties": True},
+                    "inputs": {
+                        "type": "object",
+                        "additionalProperties": True,
+                        "properties": {
+                            "x_range": {
+                                "type": "string",
+                                "description": "Cell range for X data, e.g. 'A2:A20'. Use exact column letter and row numbers from the payload."
+                            },
+                            "y_range": {
+                                "type": "string",
+                                "description": "Cell range for Y data, e.g. 'C2:C20'. Must span the same rows as x_range."
+                            },
+                            "data_range": {
+                                "type": "string",
+                                "description": "Cell range for single-column data (one-sample tests, descriptive stats), e.g. 'B2:B15'."
+                            },
+                            "alpha": {
+                                "type": "number",
+                                "description": "Significance level. Default 0.05 unless the task specifies otherwise."
+                            },
+                            "x_new": {
+                                "type": "number",
+                                "description": "Predictor value at which to compute a prediction or mean-response CI."
+                            },
+                            "mu0": {
+                                "type": "number",
+                                "description": "Null hypothesis mean for a one-sample t-test."
+                            },
+                            "method": {
+                                "type": "string",
+                                "enum": ["pearson", "spearman"],
+                                "description": "Correlation method. Omit for default Pearson."
+                            },
+                            "equal_var": {
+                                "type": "boolean",
+                                "description": "If true, use pooled-variance (Student) t-test; if false (default), use Welch."
+                            }
+                        }
+                    },
                     "steps": {"type": "array", "items": {"type": "string"}},
                     "excel_formulas": {
                         "type": "array",
@@ -127,9 +165,25 @@ REVISION_QUESTIONS_TOOL_SCHEMA: dict[str, Any] = {
                 "properties": {
                     "task_id": {"type": "string"},
                     "question": {"type": "string"},
+                    "options": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 4,
+                        "maxItems": 4,
+                        "description": "Exactly 4 Estonian-language multiple-choice options (labelled A–D internally).",
+                    },
+                    "correct_option": {
+                        "type": "string",
+                        "enum": ["A", "B", "C", "D"],
+                        "description": "Letter of the one correct option.",
+                    },
                     "answer": {"type": "string"},
+                    "explanation": {
+                        "type": "string",
+                        "description": "Concise Estonian explanation of why the answer is correct.",
+                    },
                 },
-                "required": ["question", "answer"],
+                "required": ["question", "options", "correct_option", "answer", "explanation"],
             },
         }
     },

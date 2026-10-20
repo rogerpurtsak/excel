@@ -109,6 +109,51 @@ def test_chi_square_uniform_default():
     assert res["df"] == 3
 
 
+def test_chi_square_uses_alpha():
+    """chi_square_test must use the provided alpha, not a hardcoded 0.05.
+
+    The reject_null flag must equal (p_value < alpha) for every alpha value.
+    """
+    for obs, alpha in [
+        ([10, 10, 10, 10], 0.05),    # uniform: large p -> should not reject
+        ([10, 10, 10, 10], 0.99),    # same data, huge alpha -> should reject
+        ([1, 50, 1, 1], 0.05),       # skewed: very small p -> should reject
+        ([1, 50, 1, 1], 1e-8),       # same skewed data, tiny alpha
+    ]:
+        res = me.chi_square_test(obs, alpha=alpha)
+        assert math.isclose(res["alpha"], alpha), f"alpha not stored for obs={obs}"
+        expected_reject = res["p_value"] < alpha
+        assert res["reject_null"] is expected_reject, (
+            f"reject_null={res['reject_null']} but p={res['p_value']:.6f}, alpha={alpha}"
+        )
+
+
+def test_spearman_correlation_values():
+    """spearman_correlation returns rho in [-1, 1] and a valid p-value."""
+    rho, p = me.spearman_correlation(FIREARMS, HOMICIDES)
+    assert -1.0 <= rho <= 1.0
+    assert 0.0 <= p <= 1.0
+    # Firearms vs homicides should be positively correlated (Spearman too).
+    assert rho > 0.5
+
+
+def test_confidence_interval_mean_narrower_than_pi():
+    """Mean-response CI must always be contained within the prediction interval."""
+    for x_new in [3.0, 5.0, 11.6]:
+        ci_lo, ci_hi = me.confidence_interval_mean(FIREARMS, HOMICIDES, x_new)
+        pi_lo, pi_hi, _ = me.prediction_interval(FIREARMS, HOMICIDES, x_new)
+        assert ci_lo > pi_lo, f"CI lower not > PI lower at x={x_new}"
+        assert ci_hi < pi_hi, f"CI upper not < PI upper at x={x_new}"
+
+
+def test_prediction_interval_alpha_respected():
+    """Wider alpha (looser) produces wider PI than default 95%."""
+    lo_95, hi_95, _ = me.prediction_interval(FIREARMS, HOMICIDES, 5.0, alpha=0.05)
+    lo_90, hi_90, _ = me.prediction_interval(FIREARMS, HOMICIDES, 5.0, alpha=0.10)
+    # 95% interval must be wider than 90%.
+    assert hi_95 - lo_95 > hi_90 - lo_90
+
+
 def test_mismatched_lengths_raise():
     with pytest.raises(ValueError):
         me.pearson_correlation([1, 2, 3], [1, 2])
