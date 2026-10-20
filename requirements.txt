@@ -1,0 +1,22 @@
+# Core computation
+numpy>=1.26
+scipy>=1.11
+
+# Excel I/O
+xlrd>=2.0            # legacy .xls inspection (2.0+ is .xls-only)
+openpyxl>=3.1        # .xlsx output + charts
+xlwings>=0.30        # optional live Excel integration (graceful if Excel absent)
+
+# AI
+anthropic>=0.40
+
+# Data modeling
+pydantic>=2.5
+
+# macOS integration
+rumps>=0.4           # menu bar app
+keyring>=24.0        # macOS Keychain for the API key
+
+# Tests & build
+pytest>=7.4
+pyinstaller>=6.0

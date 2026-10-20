@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "excel-ai-solver"
+version = "1.0.0"
+description = "macOS menu bar app that solves Excel statistics worksheets with Claude + NumPy/SciPy"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Excel AI Solver" }]
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "xlrd>=2.0",
+    "openpyxl>=3.1",
+    "anthropic>=0.40",
+    "pydantic>=2.5",
+    "rumps>=0.4",
+    "keyring>=24.0",
+]
+
+[project.optional-dependencies]
+excel = ["xlwings>=0.30"]
+dev = ["pytest>=7.4", "pyinstaller>=6.0"]
+
+[project.scripts]
+excel-ai-solver = "src.app:main"
+
+[tool.setuptools]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
